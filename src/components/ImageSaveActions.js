@@ -2,11 +2,45 @@ import React, { useState } from 'react';
 import { StyleSheet, View, TouchableOpacity, Text, Alert, ActivityIndicator } from 'react-native';
 import * as MediaLibrary from 'expo-media-library';
 import * as Sharing from 'expo-sharing';
-// Importação atualizada para a API legada do Expo FileSystem
 import * as FileSystem from 'expo-file-system/legacy';
+import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
 
-export default function ImageSaveActions({ images }) {
+export default function ImageSaveActions({ images, targetWidth, targetHeight, cropRegion }) {
   const [loading, setLoading] = useState(false);
+
+  // Função auxiliar para aplicar as transformações de imagem (redimensionamento / corte)
+  const processImage = async (imageUri) => {
+    const actions = [];
+
+    // Adiciona ação de corte (crop), se especificado: { originX, originY, width, height }
+    if (cropRegion) {
+      actions.push({ crop: cropRegion });
+    }
+
+    // Adiciona ação de redimensionamento (resize)
+    if (targetWidth || targetHeight) {
+      actions.push({
+        resize: {
+          width: targetWidth,
+          height: targetHeight,
+        },
+      });
+    }
+
+    // Se nenhuma alteração foi solicitada, retorna a URI original
+    if (actions.length === 0) {
+      return imageUri;
+    }
+
+    // Processa a imagem e retorna a nova URI temporária
+    const result = await manipulateAsync(
+      imageUri,
+      actions,
+      { compress: 0.9, format: SaveFormat.JPEG }
+    );
+
+    return result.uri;
+  };
 
   const saveToGallery = async () => {
     if (!images || images.length === 0) {
@@ -17,33 +51,38 @@ export default function ImageSaveActions({ images }) {
     setLoading(true);
 
     try {
-      // Solicita permissão apenas de gravação
-      const permission = await MediaLibrary.requestPermissionsAsync(true);
+      const { status } = await MediaLibrary.requestPermissionsAsync(true);
 
-      if (permission.status !== 'granted') {
-        Alert.alert('Permissão negada', 'É necessária permissão para salvar fotos na galeria.');
+      if (status !== 'granted') {
+        Alert.alert('Permissão negada', 'É necessária permissão de fotos para salvar na galeria.');
         setLoading(false);
         return;
       }
 
       for (const img of images) {
-        const filename = img.uri.split('/').pop() || `image_${Date.now()}.jpg`;
+        // 1. Processa/Redimensiona a imagem antes de salvar
+        const processedUri = await processImage(img.uri);
+
+        // 2. Copia para o sistema de arquivos local do app
+        const filename = `telafit_${Date.now()}_${Math.floor(Math.random() * 1000)}.jpg`;
         const targetPath = `${FileSystem.documentDirectory}${filename}`;
 
-        // Copia o arquivo da URI para o diretório de documentos do app
         await FileSystem.copyAsync({
-          from: img.uri,
+          from: processedUri,
           to: targetPath,
         });
 
-        // Grava na galeria do dispositivo
-        await MediaLibrary.createAssetAsync(targetPath);
+        // 3. Salva no álbum padrão da galeria
+        await MediaLibrary.saveToLibraryAsync(targetPath);
       }
 
       Alert.alert('Sucesso! 🎉', `${images.length} imagem(ns) salva(s) na sua galeria.`);
     } catch (error) {
-      console.error(error);
-      Alert.alert('Erro ao Salvar', 'Não foi possível salvar a imagem na galeria.');
+      console.error('Erro ao salvar:', error);
+      Alert.alert(
+        'Erro ao Salvar',
+        'Não foi possível salvar a imagem na galeria. No Expo Go, o Android limita o acesso à galeria — para acesso completo (álbuns), gere um development build.'
+      );
     } finally {
       setLoading(false);
     }
@@ -61,10 +100,17 @@ export default function ImageSaveActions({ images }) {
       return;
     }
 
+    setLoading(true);
+
     try {
-      await Sharing.shareAsync(images[0].uri);
+      // Processa a primeira imagem antes de compartilhar
+      const processedUri = await processImage(images[0].uri);
+      await Sharing.shareAsync(processedUri);
     } catch (error) {
+      console.error('Erro ao compartilhar:', error);
       Alert.alert('Erro', 'Ocorreu um problema ao compartilhar.');
+    } finally {
+      setLoading(false);
     }
   };
 
